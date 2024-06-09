@@ -62,11 +62,11 @@ class Measure(BaseModel):
     sql_operation: str
 
 
-class View(BaseModel):
-    name: str
-    required_joins: list[str]
-    description: str
-    sql_operation: str
+# class View(BaseModel):
+#     name: str
+#     required_joins: list[str]
+#     description: str
+#     sql_operation: str
 
 
 class SemanticModelType(str, Enum):
