@@ -150,7 +150,7 @@ CONTAINER ID   IMAGE            COMMAND                  CREATED         STATUS 
 ### See Docker App container logs
 Once app container is running just execute the next command
 ```
-docker-compose exec app cat dataherald.log
+docker-compose exec engine cat dataherald.log
 ```
 
 ### Connect to Docker MongoDB container
