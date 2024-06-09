@@ -197,6 +197,7 @@ class SqlAlchemyScanner(Scanner):
                 primary_key=col.primary_key,
                 autoincrement=col.autoincrement,
             )
+            for col in valid_columns
         ]
 
         if "clickhouse" not in str(db_engine.engine.url).split(":")[0]:
