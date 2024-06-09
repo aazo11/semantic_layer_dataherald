@@ -33,3 +33,7 @@ class ContextStore(Component, ABC):
     @abstractmethod
     def remove_golden_sqls(self, ids: List) -> bool:
         pass
+
+    @abstractmethod
+    def generate_semantic_models(self, db_connection_id: str):
+        pass

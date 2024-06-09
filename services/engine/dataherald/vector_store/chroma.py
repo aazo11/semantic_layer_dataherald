@@ -25,6 +25,7 @@ class Chroma(VectorStore):
         db_connection_id: str,
         collection: str,
         num_results: int,
+        convert_pinecone: bool = True
     ) -> list:
         try:
             target_collection = self.chroma_client.get_collection(collection)
@@ -36,7 +37,7 @@ class Chroma(VectorStore):
             n_results=num_results,
             where={"db_connection_id": db_connection_id},
         )
-        return self.convert_to_pinecone_object_model(query_results)
+        return self.convert_to_pinecone_object_model(query_results) if convert_pinecone else query_results
 
     @override
     def add_records(self, golden_sqls: List[GoldenSQL], collection: str):

@@ -122,3 +122,7 @@ class DefaultContextStore(ContextStore):
             if deleted == 0:
                 logger.warning(f"Golden record with id {id} not found")
         return True
+
+    @override
+    def generate_semantic_models(self, db_connection_id: str):
+        raise NotImplementedError("generate_semantic_models is not implemented on DefaultContextStore")
