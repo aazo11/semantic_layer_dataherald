@@ -9,6 +9,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from overrides import override
 from pydantic import BaseModel, Field
 
+
 from dataherald.config import System
 from dataherald.context_store import ContextStore
 from dataherald.context_store.semantic_context_store import SemanticContextStore, SemanticModel
@@ -52,6 +53,7 @@ class SemanticSQLAgent(SQLGenerator):
     """
 
     db: SQLDatabase = Field(exclude=True)
+
     
     def __init__(self, system: System, llm_config: LLMConfig):
         super().__init__(system, llm_config)
@@ -59,11 +61,13 @@ class SemanticSQLAgent(SQLGenerator):
             raise ValueError("ContextStore must be an instance of SemanticContextStore")
         self.semantic_model_store: SemanticContextStore = self.system.instance(ContextStore)
 
+
     def create_semantic_model_agent(
             self,
             ambuguouty_threshold: float
     ) -> AgentExecutor:
         pass
+
 
     def execute_sql_query_and_recover(self, database_connection: DatabaseConnection, sql_query: str, max_retries = 3) -> bool:
         query = replace_unprocessable_characters(sql_query)
