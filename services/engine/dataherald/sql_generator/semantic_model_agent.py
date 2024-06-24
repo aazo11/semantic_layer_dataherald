@@ -9,15 +9,19 @@ from langchain_core.prompts import ChatPromptTemplate
 from overrides import override
 from pydantic import BaseModel, Field
 
+
+from dataherald.config import System
+from dataherald.context_store import ContextStore
+from dataherald.context_store.semantic_context_store import SemanticContextStore, SemanticModel
 from dataherald.db import DB
 from dataherald.db_scanner.models.types import TableDescription, TableDescriptionStatus
 from dataherald.db_scanner.repository.base import TableDescriptionRepository
+from dataherald.sql_database.base import SQLDatabase, SQLInjectionError
 from dataherald.sql_database.models.types import (
     DatabaseConnection,
 )
-from dataherald.sql_database.base import SQLDatabase, SQLInjectionError
 from dataherald.sql_generator import EngineTimeOutORItemLimitError, SQLGenerator
-from dataherald.types import Prompt, SQLGeneration
+from dataherald.types import LLMConfig, Prompt, SQLGeneration
 from dataherald.utils.agent_prompts import SEMANTIC_MODEL_CLASSIFICATION, SEMANTIC_MODEL_SQL_GENERATOR
 from dataherald.utils.timeout_utils import run_with_timeout
 
@@ -50,6 +54,14 @@ class SemanticSQLAgent(SQLGenerator):
 
     db: SQLDatabase = Field(exclude=True)
 
+    
+    def __init__(self, system: System, llm_config: LLMConfig):
+        super().__init__(system, llm_config)
+        if not isinstance(self.system.instance(ContextStore), SemanticContextStore):
+            raise ValueError("ContextStore must be an instance of SemanticContextStore")
+        self.semantic_model_store: SemanticContextStore = self.system.instance(ContextStore)
+
+
     def create_semantic_model_agent(
             self,
             ambuguouty_threshold: float
@@ -73,13 +85,13 @@ class SemanticSQLAgent(SQLGenerator):
         except TimeoutError:
             return "SQL query execution time exceeded, proceed without query execution"
 
-    def generate_sql_query(self, user_prompt: Prompt, semantic_models: List[TableDescription], model) -> str:
+    def generate_sql_query(self, user_prompt: Prompt, semantic_models: List[SemanticModel], model) -> str:
         prompt = ChatPromptTemplate.from_template(SEMANTIC_MODEL_SQL_GENERATOR)
         parser = JsonOutputParser(pydantic_object=SQLGenerationOutput)
 
         chain = prompt | model | parser
 
-        ddl_commands = [{ "table_name":f'{semantic_model.schema_name}.{semantic_model.table_name}', "ddl":semantic_model.table_schema}
+        ddl_commands = [{ "table_name":semantic_model.get_full_name(), "ddl":semantic_model.get_relation_schema(self.db)}
                          for semantic_model in semantic_models]
         output = chain.invoke({"USER_QUESTION": user_prompt.text, "CONTEXT": ddl_commands})
         return output["sql_query"]
@@ -102,17 +114,26 @@ class SemanticSQLAgent(SQLGenerator):
             api_base=self.llm_config.api_base)
         parser = JsonOutputParser(pydantic_object=QuestionClassificationOutput)
         chain = prompt | model | parser
-        storage = self.system.instance(DB)
-        repository = TableDescriptionRepository(storage)
-        semantic_models = repository.get_all_tables_by_db(
-            {
-                "db_connection_id": str(database_connection.id),
-                "status": TableDescriptionStatus.SCANNED.value,
-                "table_name": "employee"
-            }
-        )
+
+        self.semantic_model_store.generate_semantic_models(database_connection.id, model)
+        semantic_models, _ = self.semantic_model_store.retrieve_context_for_question(user_prompt)
+        if semantic_models is None:
+            raise ValueError("No semantic models found for the user prompt")
+        # storage = self.system.instance(DB)
+        # repository = TableDescriptionRepository(storage)
+        # semantic_models = repository.get_all_tables_by_db(
+        #     {
+        #         "db_connection_id": str(database_connection.id),
+        #         "status": TableDescriptionStatus.SCANNED.value,
+        #         "table_name": "employee"
+        #     }
+        # )
+        #
+        # response = chain.invoke(
+        #     {"USER_QUESTION": user_prompt.text, "SEMANTIC_MODELS": semantic_models[0:8]})
+        
         response = chain.invoke(
-            {"USER_QUESTION": user_prompt.text, "SEMANTIC_MODELS": semantic_models[0:8]})
+            {"USER_QUESTION": user_prompt.text, "SEMANTIC_MODELS": semantic_models})
 
         if response["need_feedback"] == "Yes":
             return SQLGeneration(

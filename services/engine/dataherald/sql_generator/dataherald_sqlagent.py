@@ -730,7 +730,6 @@ class DataheraldSQLAgent(SQLGenerator):
             model_name=self.llm_config.llm_name,
             api_base=self.llm_config.api_base,
         )
-        # context_store.generate_semantic_models(str(database_connection.id))
         repository = TableDescriptionRepository(storage)
         db_scan = repository.get_all_tables_by_db(
             {
@@ -746,7 +745,6 @@ class DataheraldSQLAgent(SQLGenerator):
         few_shot_examples, instructions = context_store.retrieve_context_for_question(
             user_prompt, number_of_samples=self.max_number_of_examples
         )
-        logger.info(f'{few_shot_examples=}')
         if few_shot_examples is not None:
             new_fewshot_examples = self.remove_duplicate_examples(few_shot_examples)
             number_of_samples = len(new_fewshot_examples)
