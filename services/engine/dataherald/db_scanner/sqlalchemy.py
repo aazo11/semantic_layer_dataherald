@@ -12,6 +12,7 @@ from sqlalchemy.sql.sqltypes import NullType
 from dataherald.db_scanner import Scanner
 from dataherald.db_scanner.models.types import (
     ColumnDetail,
+    ForeignKeyDetail,
     TableDescription,
     TableDescriptionStatus,
 )
@@ -69,9 +70,7 @@ class SqlAlchemyScanner(Scanner):
     ) -> list[TableDescription]:
         rows = []
         for schema, tables in schemas_and_tables.items():
-            stored_tables = repository.find_by(
-                {"db_connection_id": str(db_connection_id), "schema_name": schema}
-            )
+            stored_tables = repository.find_by({"db_connection_id": str(db_connection_id), "schema_name": schema})
             stored_tables_list = [table.table_name for table in stored_tables]
 
             for table_description in stored_tables:
@@ -118,19 +117,11 @@ class SqlAlchemyScanner(Scanner):
             )
         return rows
 
-    def get_table_examples(
-        self, meta: MetaData, db_engine: SQLDatabase, table: str, rows_number: int = 3
-    ) -> List[Any]:
+    def get_table_examples(self, meta: MetaData, db_engine: SQLDatabase, table: str, rows_number: int = 3) -> List[Any]:
         print(f"Create examples: {table}")
         examples_query = (
             sqlalchemy.select(meta.tables[table])
-            .with_only_columns(
-                [
-                    column
-                    for column in meta.tables[table].columns
-                    if column.name.find(".") < 0
-                ]
-            )
+            .with_only_columns([column for column in meta.tables[table].columns if column.name.find(".") < 0])
             .limit(rows_number)
         )
         examples = db_engine.engine.execute(examples_query).fetchall()
@@ -152,40 +143,40 @@ class SqlAlchemyScanner(Scanner):
         scanner_service: AbstractScanner,
     ) -> ColumnDetail:
         dynamic_meta_table = meta.tables[table]
+        # TODO: for token compression, consider putting primary key and foreign key at
+        # the document level, not column level. This is computed per column.
+        primary_key_col_names = {col.name for col in dynamic_meta_table.primary_key}
+        foreign_keys = {
+            fk.parent.name: fk for fk in dynamic_meta_table.foreign_keys
+        }  # source column -> foreign key, where a foreign key contains a (src -> dest)
+        possible_fk_detail = None
+        if column["name"] in foreign_keys:
+            fk = foreign_keys[column["name"]]
+            possible_fk_detail = ForeignKeyDetail(field_name=fk.column.name, reference_table=fk.column.table.name)
 
-        field_size_query = sqlalchemy.select(
-            [dynamic_meta_table.c[column["name"]]]
-        ).limit(1)
+        col_detail = ColumnDetail(
+            name=column["name"],
+            data_type=str(column["type"]),
+            is_primary_key=column["name"] in primary_key_col_names,
+            foreign_key=possible_fk_detail,
+            description=dynamic_meta_table.c[column["name"]].comment,
+        )
 
+        field_size_query = sqlalchemy.select([dynamic_meta_table.c[column["name"]]]).limit(1)
         field_size = db_engine.engine.execute(field_size_query).first()
         # Check if the column is empty
         if not field_size:
             field_size = [""]
         if len(str(str(field_size[0]))) > MAX_SIZE_LETTERS:
-            return ColumnDetail(
-                name=column["name"],
-                data_type=str(column["type"]),
-                low_cardinality=False,
-            )
-        category_values = scanner_service.cardinality_values(
-            dynamic_meta_table.c[column["name"]], db_engine
-        )
-        if category_values:
-            return ColumnDetail(
-                name=column["name"],
-                data_type=str(column["type"]),
-                low_cardinality=True,
-                categories=category_values,
-            )
-        return ColumnDetail(
-            name=column["name"],
-            data_type=str(column["type"]),
-            low_cardinality=False,
-        )
+            return col_detail
 
-    def get_table_schema(
-        self, meta: MetaData, db_engine: SQLDatabase, table: str
-    ) -> str:
+        category_values = scanner_service.cardinality_values(dynamic_meta_table.c[column["name"]], db_engine)
+        if category_values:
+            col_detail.low_cardinality = True
+            col_detail.categories = category_values
+        return col_detail
+
+    def get_table_schema(self, meta: MetaData, db_engine: SQLDatabase, table: str) -> str:
         print(f"Create table schema for: {table}")
 
         original_table = next((x for x in meta.sorted_tables if x.name == table), None)
@@ -195,9 +186,7 @@ class SqlAlchemyScanner(Scanner):
         valid_columns = []
         for col in original_table.columns:
             if isinstance(col.type, NullType):
-                logger.warning(
-                    f"Column {col} is ignored due to its NullType data type which is not supported"
-                )
+                logger.warning(f"Column {col} is ignored due to its NullType data type which is not supported")
                 continue
             valid_columns.append(col)
 
@@ -214,23 +203,14 @@ class SqlAlchemyScanner(Scanner):
         if "clickhouse" not in str(db_engine.engine.url).split(":")[0]:
             new_table = Table(original_table.name, MetaData(), *new_columns)
         else:
-            new_table = Table(
-                original_table.name, MetaData(), *new_columns, engines.MergeTree()
-            )
+            new_table = Table(original_table.name, MetaData(), *new_columns, engines.MergeTree())
 
         foreign_key_constraints = []
         for fk in original_table.foreign_keys:
-            foreign_key_constraints.append(
-                f"FOREIGN KEY (`{fk.parent.name}`) REFERENCES `{fk.column.table.name}` (`{fk.column.name}`)"
-            )
+            foreign_key_constraints.append(f"FOREIGN KEY (`{fk.parent.name}`) REFERENCES `{fk.column.table.name}` (`{fk.column.name}`)")
 
         create_table_ddl = str(CreateTable(new_table).compile(db_engine.engine))
-        create_table_ddl = (
-            create_table_ddl.rstrip()[:-1].rstrip()
-            + ",\n\t"
-            + ",\n\t".join(foreign_key_constraints)
-            + ");"
-        )
+        create_table_ddl = create_table_ddl.rstrip()[:-1].rstrip() + ",\n\t" + ",\n\t".join(foreign_key_constraints) + ");"
 
         return create_table_ddl.rstrip()
 
@@ -266,12 +246,8 @@ class SqlAlchemyScanner(Scanner):
             db_connection_id=db_connection_id,
             table_name=table,
             columns=table_columns,
-            table_schema=self.get_table_schema(
-                meta=meta, db_engine=db_engine, table=table
-            ),
-            examples=self.get_table_examples(
-                meta=meta, db_engine=db_engine, table=table, rows_number=3
-            ),
+            table_schema=self.get_table_schema(meta=meta, db_engine=db_engine, table=table),
+            examples=self.get_table_examples(meta=meta, db_engine=db_engine, table=table, rows_number=3),
             last_schema_sync=datetime.now(),
             error_message="",
             status=TableDescriptionStatus.SCANNED.value,
@@ -328,9 +304,7 @@ class SqlAlchemyScanner(Scanner):
                 )
             try:
                 logger.info(f"Get logs table: {table}")
-                query_history = scanner_service.get_logs(
-                    table.table_name, db_engine, table.db_connection_id
-                )
+                query_history = scanner_service.get_logs(table.table_name, db_engine, table.db_connection_id)
                 if len(query_history) > 0:
                     for query in query_history:
                         query_history_repository.insert(query)
